@@ -1,202 +1,96 @@
-# Axiom Architecture Documentation
+# Axiom — Architecture & Ground Rules
 
-## Overview
+Axiom is a conversational access-control plane: an AI-native IAM orchestration
+engine that lives inside Slack / Google Chat and mutates access in GCP IAM and
+Supabase through deterministic, validated adapters.
 
-Axiom is a monorepo-based enterprise integration platform consisting of two core services: an API Gateway and a Core Integration Engine. This document outlines the architecture, design decisions, and service interaction patterns.
+## Hard Rules
 
-## System Architecture
+1. **No commits to main.** All work happens on feature branches off `staging`.
+   PRs target `staging` first, get reviewed, then merge to `main`.
+2. **AI never mutates access directly.** The chat/LLM layer only calls a
+   narrow, pre-validated adapter interface (see "Adapter contract" below).
+   No freeform API calls to GCP/Supabase from the conversational layer.
+3. **No `console.log`.** Use the shared logger (`apps/core/src/lib/logger.ts`).
+4. **No raw SQL against Supabase.** Use the Supabase client or typed RPCs.
+5. **Route handlers are thin.** Parse input, call a service, return a result.
+   If a handler exceeds ~50 lines, extract a service.
+6. **Layer order: Controller → Facade → Service → Repository/Adapter.**
+   Business logic never talks to GCP/Supabase SDKs directly from a workflow —
+   it goes through the adapter layer.
+7. **Secrets via env / Secret Manager placeholders.** Never hardcode.
+   (Production target: GCP Secret Manager. Local dev: `.env`, gitignored.)
+8. **State-changing writes are atomic with their audit/outbox record.** Every
+   grant/revoke commits its state row and its audit-log row in one
+   transaction — this audit trail is a first-class product feature (it's what
+   makes Axiom the operational system-of-record for permission changes), not
+   an afterthought.
 
-### High-Level Components
+## Domain Map
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Client Applications                  │
-└──────────────────────────┬──────────────────────────────┘
-                           │ HTTP/REST
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│              API Gateway (apps/gateway)                 │
-│  - Request routing and orchestration                    │
-│  - Authentication & authorization                      │
-│  - Rate limiting and throttling                         │
-│  - Request/response transformation                      │
-└──────────────────────────┬──────────────────────────────┘
-                           │ gRPC/Internal API
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│          Core Engine (apps/core - NestJS)               │
-│  - Workflow orchestration                               │
-│  - Data transformation pipelines                        │
-│  - Service integration logic                            │
-│  - Event processing                                     │
-└─────────────────────────────────────────────────────────┘
-```
+- `apps/gateway` — **Conversational Intake Gateway.** Slack/Google Chat bot.
+  Parses plain-text commands ("give me DB access to X", "onboard <name> to
+  <project>"), formats approval cards, posts them to the approving manager,
+  and forwards approved requests to `apps/core`.
+- `apps/core` — **Core Engine.** NestJS. Owns:
+  - **API Orchestration Adapters** — deterministic, idempotent scripts that
+    inject/remove group membership in GCP IAM and grant/revoke roles in
+    Supabase. These are the *only* code paths allowed to mutate access.
+  - **Deterministic Scheduler** — background job tracking every access
+    grant's expiry window (e.g. 90/180 days). Fires the revoke adapter the
+    instant a window closes. No human polling required.
+  - **Approval workflow** — manager approval state machine (pending →
+    approved/denied), including the P0 break-glass override path (engineer
+    self-grants during an incident, triggers escalation + immutable incident
+    record + mandatory next-day review).
 
-## Services
+## 5-Day MVP Scope
 
-### 1. API Gateway (`apps/gateway`)
+1. **Conversational Intake Gateway** — Google Chat app that reads a plain-text
+   command, extracts intent (resource, requester, duration), and posts a
+   formatted approval card to the manager.
+2. **API Orchestration Adapters** — scripts (not agent-driven calls) that can
+   inject/remove a user from a GCP IAM group, and grant/revoke a Supabase
+   role/RLS policy assignment. Each adapter call is idempotent and logged.
+3. **Deterministic Scheduler** — a lightweight background loop that records
+   grant end-dates and calls the revoke adapter the moment a window expires.
 
-**Technology Stack:**
-- Node.js + Express (or Fastify)
-- TypeScript
-- Lightweight, high-performance request routing
+Explicitly **out of scope for the 5-day MVP**: the web-UI admin console,
+Snowflake/Jira/GitHub adapters, multi-tenant billing, and the break-glass path
+UI (the state machine can exist without a polished emergency UX yet).
 
-**Responsibilities:**
-- Routes incoming requests to appropriate services
-- Handles protocol translation (HTTP ↔ internal APIs)
-- Implements cross-cutting concerns (logging, metrics, security)
-- Rate limiting and request throttling
-- Request/response validation
+## Adapter Contract (why the AI can't freelance)
 
-**Key Files:**
-- `src/index.ts` - Server entry point
-- `src/routes/` - Endpoint definitions
-- `src/middleware/` - Custom middleware
+Every mutating operation goes through a typed adapter method with a fixed
+signature, e.g.:
 
-### 2. Core Integration Engine (`apps/core`)
-
-**Technology Stack:**
-- NestJS framework
-- TypeScript
-- Modular architecture
-
-**Responsibilities:**
-- Orchestrates complex workflows
-- Manages data transformation pipelines
-- Coordinates service-to-service communication
-- Event-driven architecture
-- Business logic execution
-
-**Key Files:**
-- `src/main.ts` - Application bootstrap
-- `src/modules/` - Feature modules
-- `src/services/` - Business logic
-
-## Design Decisions
-
-### Monorepo Structure
-
-**Decision:** Use npm workspaces in a monorepo layout.
-
-**Rationale:**
-- Shared code and types across services
-- Simplified dependency management
-- Unified CI/CD pipeline
-- Atomic commits for related changes
-
-### Technology Choices
-
-**TypeScript Everywhere:**
-- Type safety across the entire platform
-- Better IDE support and developer experience
-- Reduced runtime errors
-
-**NestJS for Core:**
-- Built-in dependency injection
-- Decorator-based architecture
-- Rich ecosystem of modules
-- Excellent documentation
-
-**Lightweight Gateway:**
-- Minimal dependencies
-- Fast request processing
-- Simple to reason about and extend
-
-## Development Workflow
-
-### Local Setup
-
-```bash
-# Clone and install
-git clone https://github.com/trilogy-group/axiom.git
-cd axiom
-npm install
-
-# Start development servers
-npm run dev
-
-# Run tests
-npm run test
-
-# Build for production
-npm run build
-```
-
-### Workspace Commands
-
-All commands execute across workspace packages:
-
-```bash
-npm run dev --workspaces      # Start all services in dev mode
-npm run build --workspaces    # Build all packages
-npm run test --workspaces     # Run all test suites
-```
-
-## API Contract
-
-### Gateway → Core Communication
-
-Services communicate via RESTful APIs (or gRPC for high-performance scenarios).
-
-**Example Request:**
-```
-POST /core/workflows/{id}/execute
-Content-Type: application/json
-
-{
-  "input": { ... },
-  "context": { ... }
+```ts
+interface IamAdapter {
+  grantGcpGroupMembership(userEmail: string, groupId: string, expiresAt: Date): Promise<GrantResult>;
+  revokeGcpGroupMembership(userEmail: string, groupId: string): Promise<RevokeResult>;
+  grantSupabaseRole(userId: string, role: string, expiresAt: Date): Promise<GrantResult>;
+  revokeSupabaseRole(userId: string, role: string): Promise<RevokeResult>;
 }
 ```
 
-## Deployment Strategy
+The conversational/LLM layer can only call these methods with validated
+arguments — it cannot construct or send its own API requests to GCP/Supabase.
+This is a deliberate reliability boundary: hallucination in an IAM system
+is unacceptable, so nothing the model outputs can become a mutation without
+passing through this fixed, testable interface.
 
-### Local Development
-- All services run on localhost
-- Hot reloading enabled
-- Shared package dependencies via workspaces
+## Where To Look
 
-### Production
-- Container-based deployments (Docker)
-- Separate service scaling
-- Kubernetes-ready architecture
+- Product pitch: `README.md`
+- Active plans: `.claude/plans/` (create as work is scoped)
+- Contracts for cross-domain work: `~/agents/axiom/contracts/`
+- Squad roster + routing: internal (Hermes profiles, not part of this repo)
 
-## Monitoring & Observability
+## Setup
 
-### Logging
-- Structured JSON logging
-- Centralized log aggregation-ready
-
-### Metrics
-- Request latency tracking
-- Service health checks
-- Custom business metrics
-
-### Tracing
-- Distributed tracing support ready
-- Request correlation IDs
-
-## Future Enhancements
-
-- [ ] Add message queue integration (RabbitMQ/Kafka)
-- [ ] Implement gRPC communication between services
-- [ ] Add comprehensive metrics dashboard
-- [ ] Database abstraction layer
-- [ ] Authentication service
-- [ ] Plugin system for extensibility
-
-## Contributing
-
-When adding new features:
-
-1. Keep services loosely coupled
-2. Maintain type safety across boundaries
-3. Add comprehensive tests
-4. Update this documentation
-5. Follow the established code patterns
-
-## References
-
-- [NestJS Documentation](https://docs.nestjs.com)
-- [Express.js Guide](https://expressjs.com)
-- [TypeScript Handbook](https://www.typescriptlang.org/docs/)
+```bash
+npm install
+npm run dev      # runs gateway + core in dev mode
+npm run test
+npm run build
+```

@@ -1,7 +1,7 @@
 {
   "name": "axiom",
   "version": "0.1.0",
-  "description": "Enterprise Integration Platform",
+  "description": "Axiom — Conversational Access Control Plane. AI-native IAM orchestration engine living inside Slack/Google Chat.",
   "private": true,
   "workspaces": [
     "apps/gateway",
@@ -18,8 +18,12 @@
     "npm": ">=9.0.0"
   },
   "keywords": [
-    "enterprise",
-    "integration",
-    "platform"
+    "iam",
+    "access-control",
+    "conversational-ai",
+    "gcp",
+    "supabase",
+    "slack",
+    "google-chat"
   ]
 }
