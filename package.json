@@ -1,0 +1,25 @@
+{
+  "name": "axiom",
+  "version": "0.1.0",
+  "description": "Enterprise Integration Platform",
+  "private": true,
+  "workspaces": [
+    "apps/gateway",
+    "apps/core"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspaces",
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspaces",
+    "lint": "eslint . --ext .ts,.js"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "keywords": [
+    "enterprise",
+    "integration",
+    "platform"
+  ]
+}
