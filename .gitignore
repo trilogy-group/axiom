@@ -1,4 +1,4 @@
-# node_modules
+node_modules/
 dist/
 build/
 *.log
@@ -12,3 +12,4 @@ build/
 *~
 .coverage/
 coverage/
+package-lock.json
